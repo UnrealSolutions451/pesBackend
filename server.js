@@ -31,8 +31,10 @@ const MERCHANT_BASE_URL = process.env.MERCHANT_BASE_URL; // your backend base UR
 
 // Helper: sign payload per PhonePe docs (HMAC SHA256)
 function signPayload(payload) {
-  const jsonStr = JSON.stringify(payload);
-  return crypto.createHmac("sha256", MERCHANT_SECRET).update(jsonStr).digest("hex");
+  const base64Payload = Buffer.from(JSON.stringify(payload)).toString("base64");
+  const stringToSign = base64Payload + "/pg/v1/pay" + MERCHANT_SECRET; // MERCHANT_SECRET should be your salt key
+  const sha256 = crypto.createHash("sha256").update(stringToSign).digest("hex");
+  return sha256 + "###1"; // 1 = saltIndex (from PhonePe dashboard)
 }
 
 // --- CREATE ORDER ---
@@ -45,24 +47,30 @@ app.post("/api/create-order", async (req, res) => {
     const createOrderPayload = {
       merchantId: MERCHANT_ID,
       merchantTransactionId: orderId,
-      amount: amountPaise,
       merchantUserId: sessionId || "guest",
+      amount: amountPaise,
       redirectUrl: `${MERCHANT_BASE_URL}/payment-return.html?orderId=${orderId}`,
       callbackUrl: `${MERCHANT_BASE_URL}/api/webhook`,
       mobileNumber: "9999999999",
-      paymentInstrument: { type: "PAY_PAGE" }
+      paymentInstrument: { type: "PAY_PAGE" },
     };
 
-    const signature = signPayload(createOrderPayload);
+    const base64Payload = Buffer.from(JSON.stringify(createOrderPayload)).toString("base64");
+    const stringToSign = base64Payload + "/pg/v1/pay" + MERCHANT_SECRET;
+    const sha256 = crypto.createHash("sha256").update(stringToSign).digest("hex");
+    const signature = sha256 + "###1";
 
-    const response = await axios.post(`${PHONEPE_BASE}/pg/v1/pay`, createOrderPayload, {
-      headers: {
-        "Content-Type": "application/json",
-        "X-MERCHANT-ID": MERCHANT_ID,
-        "X-SIGNATURE": signature,
-      },
-      timeout: 15000,
-    });
+    const response = await axios.post(
+      `${PHONEPE_BASE}/pg/v1/pay`,
+      { request: base64Payload },
+      {
+        headers: {
+          "Content-Type": "application/json",
+          "X-VERIFY": signature,
+          "X-MERCHANT-ID": MERCHANT_ID,
+        },
+      }
+    );
 
     const phonepeResp = response.data;
 
@@ -89,6 +97,7 @@ app.post("/api/create-order", async (req, res) => {
     });
   }
 });
+
 
 
 // --- WEBHOOK (PhonePe callback) ---
