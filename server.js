@@ -1,10 +1,9 @@
 // ============================
-//  PES CANTEEN - PHONEPE BACKEND (FIXED)
+//  PES CANTEEN - PHONEPE BACKEND (OAuth Method)
 // ============================
 
 const express = require("express");
 const axios = require("axios");
-const crypto = require("crypto");
 const dotenv = require("dotenv");
 const cors = require("cors");
 const admin = require("firebase-admin");
@@ -27,34 +26,61 @@ if (!admin.apps.length) {
 const db = admin.firestore();
 
 // ============================
-// 🔹 PHONEPE CONFIG - FIXED
+// 🔹 PHONEPE CONFIG (OAuth Method)
 // ============================
-const PHONEPE_BASE = process.env.PHONEPE_BASE_URL; // https://api-preprod.phonepe.com/apis/pg-sandbox (UAT) or https://api.phonepe.com/apis/hermes (PROD)
-const MERCHANT_ID = process.env.PHONEPE_MERCHANT_ID;
-const SALT_KEY = process.env.PHONEPE_SECRET; // This is your Salt Key
-const SALT_INDEX = "1"; // Usually 1, check your PhonePe dashboard
+const PHONEPE_BASE = "https://api.phonepe.com/apis/hermes"; // Production
+const CLIENT_ID = process.env.PHONEPE_CLIENT_ID; // From dashboard
+const CLIENT_SECRET = process.env.PHONEPE_CLIENT_SECRET; // From "Show Key"
+const MERCHANT_ID = process.env.PHONEPE_MERCHANT_ID; // M23GZ2KFA4MBL
 const MERCHANT_BASE_URL = process.env.MERCHANT_BASE_URL;
 
+// Cache for access token
+let accessToken = null;
+let tokenExpiry = null;
+
 // ============================
-// 🔹 SIGNATURE HELPER (FIXED)
+// 🔹 GET ACCESS TOKEN (OAuth)
 // ============================
-function generateSignature(payload) {
-  const base64Payload = Buffer.from(JSON.stringify(payload)).toString("base64");
-  const stringToSign = base64Payload + "/pg/v1/pay" + SALT_KEY;
-  const sha256 = crypto.createHash("sha256").update(stringToSign).digest("hex");
-  const signature = sha256 + "###" + SALT_INDEX;
-  
-  return { base64Payload, signature };
+async function getAccessToken() {
+  // Return cached token if still valid
+  if (accessToken && tokenExpiry && Date.now() < tokenExpiry) {
+    return accessToken;
+  }
+
+  try {
+    const authString = Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString('base64');
+    
+    const response = await axios.post(
+      `${PHONEPE_BASE}/v1/oauth/token`,
+      "grant_type=client_credentials",
+      {
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "Authorization": `Basic ${authString}`
+        }
+      }
+    );
+
+    accessToken = response.data.access_token;
+    const expiresIn = response.data.expires_in || 3600; // Usually 1 hour
+    tokenExpiry = Date.now() + (expiresIn * 1000) - 60000; // Refresh 1 min early
+
+    console.log("✅ Access token obtained, expires in:", expiresIn, "seconds");
+    return accessToken;
+
+  } catch (err) {
+    console.error("❌ Token fetch failed:", err.response?.data || err.message);
+    throw new Error("Failed to get access token");
+  }
 }
 
 // ============================
-// 🔹 CREATE ORDER (FIXED)
+// 🔹 CREATE ORDER (OAuth Method)
 // ============================
 app.post("/api/create-order", async (req, res) => {
   try {
     const { items, total, table, sessionId } = req.body;
     
-    // Validate inputs
     if (!items || !total || total <= 0) {
       return res.status(400).json({ message: "Invalid order data" });
     }
@@ -62,7 +88,10 @@ app.post("/api/create-order", async (req, res) => {
     const orderId = "PES" + Date.now();
     const amountPaise = Math.round(total * 100);
 
-    // Build payload - FIXED structure
+    // Get OAuth token
+    const token = await getAccessToken();
+
+    // Build payload
     const payload = {
       merchantId: MERCHANT_ID,
       merchantTransactionId: orderId,
@@ -71,14 +100,11 @@ app.post("/api/create-order", async (req, res) => {
       redirectUrl: `${MERCHANT_BASE_URL}/payment-return.html?orderId=${orderId}`,
       redirectMode: "POST",
       callbackUrl: `${MERCHANT_BASE_URL}/api/webhook`,
-      mobileNumber: "9999999999", // Optional in UAT, required in production
+      mobileNumber: "9999999999",
       paymentInstrument: {
         type: "PAY_PAGE"
       }
     };
-
-    // Generate signature
-    const { base64Payload, signature } = generateSignature(payload);
 
     console.log("🔹 Initiating payment:", {
       orderId,
@@ -86,16 +112,15 @@ app.post("/api/create-order", async (req, res) => {
       merchantId: MERCHANT_ID
     });
 
-    // Call PhonePe API - FIXED endpoint
+    // Call PhonePe API with OAuth token
     const response = await axios.post(
-      `${PHONEPE_BASE}/pg/v1/pay`,
-      {
-        request: base64Payload
-      },
+      `${PHONEPE_BASE}/v1/debit`,
+      payload,
       {
         headers: {
           "Content-Type": "application/json",
-          "X-VERIFY": signature
+          "Authorization": `Bearer ${token}`,
+          "X-MERCHANT-ID": MERCHANT_ID
         }
       }
     );
@@ -141,37 +166,23 @@ app.post("/api/create-order", async (req, res) => {
 });
 
 // ============================
-// 🔹 PHONEPE WEBHOOK (FIXED)
+// 🔹 PHONEPE WEBHOOK
 // ============================
 app.post("/api/webhook", async (req, res) => {
   try {
-    const base64Response = req.body.response;
-    const receivedSignature = req.headers["x-verify"];
-
-    // Verify signature
-    const expectedSignature = crypto
-      .createHash("sha256")
-      .update(base64Response + SALT_KEY)
-      .digest("hex") + "###" + SALT_INDEX;
-
-    if (receivedSignature !== expectedSignature) {
-      console.error("❌ Invalid signature");
-      return res.status(401).send("Invalid signature");
-    }
-
-    // Decode payload
-    const payload = JSON.parse(Buffer.from(base64Response, "base64").toString());
-    const orderId = payload.data.merchantTransactionId;
+    const payload = req.body;
+    const orderId = payload.data?.merchantTransactionId || payload.merchantTransactionId;
     const status = payload.code === "PAYMENT_SUCCESS" ? "SUCCESS" : "FAILED";
 
-    console.log("🔔 Webhook received:", { orderId, status });
+    console.log("🔔 Webhook received:", { orderId, status, payload });
 
-    // Update order in Firestore
-    await db.collection("orders").doc(orderId).update({
-      status,
-      phonepeCallback: payload,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
+    if (orderId) {
+      await db.collection("orders").doc(orderId).update({
+        status,
+        phonepeCallback: payload,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
 
     res.status(200).send("OK");
   } catch (err) {
@@ -181,14 +192,13 @@ app.post("/api/webhook", async (req, res) => {
 });
 
 // ============================
-// 🔹 CHECK ORDER STATUS (FIXED)
+// 🔹 CHECK ORDER STATUS
 // ============================
 app.get("/api/order-status", async (req, res) => {
   const { orderId } = req.query;
   if (!orderId) return res.status(400).json({ message: "Missing orderId" });
 
   try {
-    // Check Firestore
     const doc = await db.collection("orders").doc(orderId).get();
     if (!doc.exists) {
       return res.status(404).json({ message: "Order not found" });
@@ -196,21 +206,19 @@ app.get("/api/order-status", async (req, res) => {
 
     const data = doc.data();
 
-    // Optionally verify with PhonePe API
-    const statusCheckUrl = `${PHONEPE_BASE}/pg/v1/status/${MERCHANT_ID}/${orderId}`;
-    const stringToSign = `/pg/v1/status/${MERCHANT_ID}/${orderId}` + SALT_KEY;
-    const signature = crypto.createHash("sha256").update(stringToSign).digest("hex") + "###" + SALT_INDEX;
-
+    // Optionally check status with PhonePe
     try {
-      const statusResponse = await axios.get(statusCheckUrl, {
-        headers: {
-          "Content-Type": "application/json",
-          "X-VERIFY": signature,
-          "X-MERCHANT-ID": MERCHANT_ID
+      const token = await getAccessToken();
+      const statusResponse = await axios.get(
+        `${PHONEPE_BASE}/v1/status/${MERCHANT_ID}/${orderId}`,
+        {
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${token}`,
+            "X-MERCHANT-ID": MERCHANT_ID
+          }
         }
-      });
-
-      console.log("📊 Status check:", statusResponse.data);
+      );
 
       res.json({
         status: data.status,
@@ -218,7 +226,6 @@ app.get("/api/order-status", async (req, res) => {
         phonepeStatus: statusResponse.data
       });
     } catch (statusErr) {
-      // If status check fails, return Firestore data
       res.json({ status: data.status, order: data });
     }
 
@@ -234,7 +241,7 @@ app.get("/api/order-status", async (req, res) => {
 app.get("/", (_, res) => {
   res.json({
     status: "running",
-    message: "PES Canteen PhonePe Backend ✅",
+    message: "PES Canteen PhonePe Backend (OAuth) ✅",
     timestamp: new Date().toISOString()
   });
 });
@@ -246,4 +253,5 @@ app.listen(port, () => {
   console.log(`✅ Server running on port ${port}`);
   console.log(`🔹 PhonePe Base: ${PHONEPE_BASE}`);
   console.log(`🔹 Merchant ID: ${MERCHANT_ID}`);
+  console.log(`🔹 Using OAuth authentication`);
 });
