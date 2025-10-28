@@ -40,10 +40,10 @@ async function getAccessToken() {
   }
   try {
     const postBody = qs.stringify({
-      clientid: CLIENTID,
-      clientsecret: CLIENTSECRET,
-      granttype: 'client_credentials',
-      clientversion: '1' // Required for standard checkout
+      client_id: CLIENTID,
+      client_secret: CLIENTSECRET,
+      grant_type: 'client_credentials',
+      client_version: '1'
     });
 
     const response = await axios.post(
@@ -56,9 +56,9 @@ async function getAccessToken() {
       }
     );
 
-    accessToken = response.data.accesstoken;
-    const expiresIn = response.data.expiresin || 3600; // Usually 1 hour
-    tokenExpiry = Date.now() + expiresIn * 1000 - 60000; // Refresh 1 min early
+    accessToken = response.data.access_token || response.data.accesstoken;
+    const expiresIn = response.data.expires_in || response.data.expiresin || 3600;
+    tokenExpiry = Date.now() + expiresIn * 1000 - 60000;
     console.log('Access token obtained, expires in:', expiresIn, 'seconds');
     return accessToken;
   } catch (err) {
@@ -66,6 +66,7 @@ async function getAccessToken() {
     throw new Error('Failed to get access token');
   }
 }
+
 
 // CREATE ORDER - OAuth Method with /checkout/v2/pay
 app.post('/api/create-order', async (req, res) => {
@@ -220,3 +221,4 @@ app.listen(port, () => {
   console.log('Merchant ID:', MERCHANTID);
   console.log('Using OAuth authentication');
 });
+
