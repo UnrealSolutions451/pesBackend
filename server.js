@@ -89,9 +89,9 @@ app.post('/api/create-order', async (req, res) => {
       merchantOrderId: orderId,
       merchantUserId: sessionId || `user_${Date.now()}`,
       amount: amountPaise,
-      redirectUrl: `${MERCHANTBASEURL}payment-return.html?orderId=${orderId}`,
+      redirectUrl: `${MERCHANTBASEURL}/payment-return.html?orderId=${orderId}`,
       redirectMode: 'POST',
-      callbackUrl: `${MERCHANTBASEURL}api/webhook`,
+      callbackUrl: `${MERCHANTBASEURL}/api/webhook`,
       // Optional: add customer info or payment instruments if needed
       mobileNumber: '9999999999',
       paymentInstrument: {
@@ -221,3 +221,4 @@ app.listen(port, () => {
   console.log('Merchant ID:', MERCHANTID);
   console.log('Using OAuth authentication');
 });
+
