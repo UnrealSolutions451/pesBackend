@@ -23,7 +23,7 @@ const db = admin.firestore();
 
 // PHONEPE CONFIG - OAuth Method
 const PHONEPEBASE = 'https://api.phonepe.com/apis/identity-manager/';
-const CHECKOUT_BASE = 'https://api.phonepe.com/apis/pg/checkout/v2/pay';
+const CHECKOUT_BASE = 'https://api.phonepe.com/apis/pg/checkout/v2/';
 const CLIENTID = process.env.PHONEPE_CLIENT_ID; // From dashboard
 const CLIENTSECRET = process.env.PHONEPE_CLIENT_SECRET; // From Show Key
 const MERCHANTID = process.env.PHONEPE_MERCHANT_ID; // M23GZ2KFA4MBL
@@ -221,6 +221,7 @@ app.listen(port, () => {
   console.log('Merchant ID:', MERCHANTID);
   console.log('Using OAuth authentication');
 });
+
 
 
 
