@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Payment Status | PES Canteen</title>
+  <style>
+    :root {
+      --primary: #03045e;
+      --secondary: #000000;
+      --price: #d22c27;
+      --buttons: #46a0fa;
+      --accent: #FB8D22;
+      --background: #F7FFF7;
+      --text: #292F36;
+      --card-bg: #FFFFFF;
+    }
+    body {
+      font-family: "Poppins", sans-serif;
+      background: var(--background);
+      color: var(--secondary);
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      text-align: center;
+    }
+    .status-card {
+      background: var(--card-bg);
+      padding: 2rem;
+      border-radius: 14px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+      max-width: 400px;
+    }
+    h2 {
+      margin-bottom: 1rem;
+      color: var(--primary);
+    }
+    .success { color: green; font-weight: 600; }
+    .failed { color: var(--price); font-weight: 600; }
+    button {
+      margin-top: 1.5rem;
+      background: var(--primary);
+      color: #fff;
+      border: none;
+      padding: 0.8rem 1.5rem;
+      border-radius: 10px;
+      cursor: pointer;
+      font-size: 1rem;
+    }
+    button:hover {
+      background: var(--buttons);
+    }
+    footer {
+      position: absolute;
+      bottom: 20px;
+      text-align: center;
+      color: #666;
+      font-size: 0.85rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="status-card" id="statusCard">
+    <h2>Checking your payment...</h2>
+    <p>Please wait a moment.</p>
+  </div>
+
+  <footer>&copy; 2025 P.E.S. Canteen</footer>
+
+  <script>
+    const orderId = new URLSearchParams(window.location.search).get("orderId");
+    const statusCard = document.getElementById("statusCard");
+
+    async function checkOrder() {
+      if (!orderId) {
+        statusCard.innerHTML = "<h2 class='failed'>Invalid Order</h2><p>No order ID found.</p>";
+        return;
+      }
+
+      try {
+        // 👇 Update this URL when deployed (e.g. https://your-backend.onrender.com)
+        const res = await fetch(`http://localhost:4000/api/order-status?orderId=${orderId}`);
+        const data = await res.json();
+
+        if (!res.ok) throw new Error(data.message || "Server error");
+
+        if (data.status === "SUCCESS" || data.status === "paid") {
+          statusCard.innerHTML = `
+            <h2 class='success'>Payment Successful ✅</h2>
+            <p>Your order (<b>${orderId}</b>) has been placed successfully.</p>
+            <button onclick="window.location.href='menu.html'">Back to Menu</button>
+          `;
+        } else {
+          statusCard.innerHTML = `
+            <h2 class='failed'>Payment Failed ❌</h2>
+            <p>Order ID: ${orderId}</p>
+            <button onclick="window.location.href='checkout.html'">Try Again</button>
+          `;
+        }
+
+        // Clear any cart data
+        Object.keys(localStorage).forEach(k => {
+          if (k.startsWith("cart_")) localStorage.removeItem(k);
+        });
+
+      } catch (err) {
+        console.error(err);
+        statusCard.innerHTML = `
+          <h2 class='failed'>Unable to verify payment</h2>
+          <p>${err.message}</p>
+          <button onclick="window.location.href='menu.html'">Return</button>
+        `;
+      }
+    }
+
+    checkOrder();
+  </script>
+</body>
+</html>
