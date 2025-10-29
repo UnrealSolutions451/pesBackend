@@ -1,5 +1,6 @@
 const express = require('express');
 const axios = require('axios');
+const crypto = require('crypto');
 const dotenv = require('dotenv');
 const cors = require('cors');
 const admin = require('firebase-admin');
@@ -21,19 +22,22 @@ if (!admin.apps.length) {
 }
 const db = admin.firestore();
 
-// PHONEPE CONFIG - CORRECTED ENDPOINTS
+// PHONEPE CONFIG
 const AUTH_BASE = 'https://api.phonepe.com/apis/identity-manager/';
-const PG_BASE = 'https://api.phonepe.com/apis/hermes/pg/'; // Correct PG endpoint
 const CLIENTID = process.env.PHONEPE_CLIENT_ID;
 const CLIENTSECRET = process.env.PHONEPE_CLIENT_SECRET;
 const MERCHANTID = process.env.PHONEPE_MERCHANT_ID;
 const MERCHANTBASEURL = process.env.MERCHANT_BASE_URL;
 
+// IMPORTANT: Use the Client Secret as Salt Key for signature-based auth
+const SALT_KEY = CLIENTSECRET;
+const SALT_INDEX = '1';
+
 // Cache for access token
 let accessToken = null;
 let tokenExpiry = null;
 
-// GET ACCESS TOKEN (OAuth)
+// GET ACCESS TOKEN (OAuth) - Keep for future use
 async function getAccessToken() {
   if (accessToken && tokenExpiry && Date.now() < tokenExpiry) {
     console.log('✅ Using cached token');
@@ -73,7 +77,17 @@ async function getAccessToken() {
   }
 }
 
-// CREATE ORDER - Using correct PG API
+// SIGNATURE GENERATION (Using Client Secret as Salt Key)
+function generateSignature(payload) {
+  const base64Payload = Buffer.from(JSON.stringify(payload)).toString('base64');
+  const stringToSign = base64Payload + '/pg/v1/pay' + SALT_KEY;
+  const sha256 = crypto.createHash('sha256').update(stringToSign).digest('hex');
+  const signature = sha256 + '###' + SALT_INDEX;
+  
+  return { base64Payload, signature };
+}
+
+// CREATE ORDER - Using SIGNATURE-BASED authentication (not OAuth)
 app.post('/api/create-order', async (req, res) => {
   try {
     const { items, total, table, sessionId } = req.body;
@@ -85,13 +99,10 @@ app.post('/api/create-order', async (req, res) => {
     const orderId = `PES${Date.now()}`;
     const amountPaise = Math.round(total * 100);
 
-    // Get OAuth token
-    const token = await getAccessToken();
-
-    // Build payload - using correct field names for PG API
+    // Build payload for standard PG API
     const payload = {
       merchantId: MERCHANTID,
-      merchantTransactionId: orderId, // Note: TransactionId not OrderId
+      merchantTransactionId: orderId,
       merchantUserId: sessionId || `MUID${Date.now()}`,
       amount: amountPaise,
       redirectUrl: `${MERCHANTBASEURL}/payment-return.html?orderId=${orderId}`,
@@ -103,21 +114,27 @@ app.post('/api/create-order', async (req, res) => {
       }
     };
 
-    console.log('🔹 Initiating payment:', {
+    console.log('🔹 Creating order with payload:', {
       orderId,
       amount: amountPaise,
-      endpoint: `${PG_BASE}v1/pay`
+      merchantId: MERCHANTID
     });
 
-    // Try Method 1: Standard PG API endpoint
+    // Generate signature using Client Secret as Salt Key
+    const { base64Payload, signature } = generateSignature(payload);
+
+    console.log('🔐 Signature generated');
+
+    // Call PhonePe PG API with signature-based auth
     const response = await axios.post(
-      `${PG_BASE}v1/pay`,
-      payload,
+      'https://api.phonepe.com/apis/hermes/pg/v1/pay',
+      {
+        request: base64Payload
+      },
       {
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-          'X-MERCHANT-ID': MERCHANTID
+          'X-VERIFY': signature
         }
       }
     );
@@ -140,11 +157,10 @@ app.post('/api/create-order', async (req, res) => {
     // Extract redirect URL
     const checkoutUrl = 
       phonepeResp.data?.instrumentResponse?.redirectInfo?.url || 
-      phonepeResp.data?.redirectUrl ||
-      phonepeResp.redirectUrl;
+      phonepeResp.data?.redirectUrl;
 
     if (!checkoutUrl) {
-      console.error('❌ No checkout URL found in response:', phonepeResp);
+      console.error('❌ No checkout URL found in response');
       throw new Error('No checkout URL in response');
     }
 
@@ -157,22 +173,11 @@ app.post('/api/create-order', async (req, res) => {
   } catch (err) {
     console.error('❌ Order create failed:', {
       status: err.response?.status,
+      statusText: err.response?.statusText,
       data: err.response?.data,
-      message: err.message
+      message: err.message,
+      headers: err.response?.headers
     });
-
-    // If authorization failed, try to get a fresh token and retry once
-    if (err.response?.data?.code === 'AUTHORIZATION_FAILED') {
-      console.log('🔄 Authorization failed, clearing token cache and retrying...');
-      accessToken = null;
-      tokenExpiry = null;
-      
-      return res.status(401).json({ 
-        success: false, 
-        message: 'Authorization failed. Please try again.',
-        error: err.response?.data 
-      });
-    }
 
     res.status(500).json({ 
       success: false, 
@@ -182,17 +187,40 @@ app.post('/api/create-order', async (req, res) => {
   }
 });
 
-// PHONEPE WEBHOOK
+// PHONEPE WEBHOOK - Verify signature
 app.post('/api/webhook', async (req, res) => {
   try {
-    const payload = req.body;
-    console.log('🔔 Webhook received:', JSON.stringify(payload, null, 2));
+    console.log('🔔 Webhook received');
+    console.log('Headers:', req.headers);
+    console.log('Body:', JSON.stringify(req.body, null, 2));
 
-    const orderId = 
-      payload.data?.merchantTransactionId || 
-      payload.merchantTransactionId ||
-      payload.data?.merchantOrderId;
-    
+    // PhonePe sends base64 response in body
+    const base64Response = req.body.response;
+    const receivedSignature = req.headers['x-verify'];
+
+    if (!base64Response) {
+      console.error('❌ No response field in webhook body');
+      return res.status(400).send('Invalid webhook data');
+    }
+
+    // Verify signature
+    const expectedSignature = crypto
+      .createHash('sha256')
+      .update(base64Response + SALT_KEY)
+      .digest('hex') + '###' + SALT_INDEX;
+
+    if (receivedSignature !== expectedSignature) {
+      console.error('❌ Invalid signature');
+      return res.status(401).send('Invalid signature');
+    }
+
+    console.log('✅ Signature verified');
+
+    // Decode payload
+    const payload = JSON.parse(Buffer.from(base64Response, 'base64').toString());
+    console.log('Decoded payload:', payload);
+
+    const orderId = payload.data?.merchantTransactionId;
     const status = payload.code === 'PAYMENT_SUCCESS' ? 'SUCCESS' : 'FAILED';
 
     if (orderId) {
@@ -202,8 +230,6 @@ app.post('/api/webhook', async (req, res) => {
         updatedAt: admin.firestore.FieldValue.serverTimestamp()
       });
       console.log('✅ Order updated:', orderId, status);
-    } else {
-      console.warn('⚠️ No order ID found in webhook payload');
     }
 
     res.status(200).send('OK');
@@ -214,7 +240,7 @@ app.post('/api/webhook', async (req, res) => {
   }
 });
 
-// CHECK ORDER STATUS
+// CHECK ORDER STATUS - Using signature-based auth
 app.get('/api/order-status', async (req, res) => {
   const orderId = req.query.orderId;
   
@@ -231,16 +257,21 @@ app.get('/api/order-status', async (req, res) => {
 
     const data = doc.data();
 
-    // Try to get latest status from PhonePe
+    // Check status with PhonePe using signature
     try {
-      const token = await getAccessToken();
+      const statusEndpoint = `/pg/v1/status/${MERCHANTID}/${orderId}`;
+      const stringToSign = statusEndpoint + SALT_KEY;
+      const signature = crypto
+        .createHash('sha256')
+        .update(stringToSign)
+        .digest('hex') + '###' + SALT_INDEX;
 
       const statusResponse = await axios.get(
-        `${PG_BASE}v1/status/${MERCHANTID}/${orderId}`,
+        `https://api.phonepe.com/apis/hermes${statusEndpoint}`,
         {
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`,
+            'X-VERIFY': signature,
             'X-MERCHANT-ID': MERCHANTID
           }
         }
@@ -255,7 +286,7 @@ app.get('/api/order-status', async (req, res) => {
       });
 
     } catch (statusErr) {
-      console.warn('⚠️ PhonePe status check failed, returning local status');
+      console.warn('⚠️ PhonePe status check failed:', statusErr.message);
       res.json({ status: data.status, order: data });
     }
 
@@ -265,15 +296,14 @@ app.get('/api/order-status', async (req, res) => {
   }
 });
 
-// TEST TOKEN ENDPOINT (for debugging)
+// TEST TOKEN ENDPOINT
 app.get('/api/test-token', async (req, res) => {
   try {
     const token = await getAccessToken();
     res.json({ 
       success: true, 
-      message: 'Token obtained successfully',
-      tokenPreview: token.substring(0, 20) + '...',
-      expiresAt: new Date(tokenExpiry).toISOString()
+      message: 'OAuth token obtained successfully',
+      tokenPreview: token.substring(0, 20) + '...'
     });
   } catch (err) {
     res.status(500).json({ 
@@ -283,17 +313,38 @@ app.get('/api/test-token', async (req, res) => {
   }
 });
 
+// TEST SIGNATURE ENDPOINT
+app.get('/api/test-signature', (req, res) => {
+  const testPayload = {
+    merchantId: MERCHANTID,
+    merchantTransactionId: 'TEST123',
+    amount: 100
+  };
+  
+  const { base64Payload, signature } = generateSignature(testPayload);
+  
+  res.json({
+    success: true,
+    message: 'Signature generation test',
+    payload: testPayload,
+    base64Preview: base64Payload.substring(0, 50) + '...',
+    signaturePreview: signature.substring(0, 30) + '...'
+  });
+});
+
 // ROOT ENDPOINT
 app.get('/', (req, res) => {
   res.json({ 
     status: 'running', 
-    message: 'PES Canteen PhonePe Backend (OAuth v2)', 
+    message: 'PES Canteen PhonePe Backend (Signature Auth)', 
     timestamp: new Date().toISOString(),
+    merchantId: MERCHANTID,
     endpoints: {
-      createOrder: '/api/create-order',
-      webhook: '/api/webhook',
-      orderStatus: '/api/order-status',
-      testToken: '/api/test-token'
+      createOrder: 'POST /api/create-order',
+      webhook: 'POST /api/webhook',
+      orderStatus: 'GET /api/order-status?orderId=xxx',
+      testToken: 'GET /api/test-token',
+      testSignature: 'GET /api/test-signature'
     }
   });
 });
@@ -301,8 +352,7 @@ app.get('/', (req, res) => {
 // START SERVER
 app.listen(port, () => {
   console.log(`✅ Server running on port ${port}`);
-  console.log(`🔹 Auth Base: ${AUTH_BASE}`);
-  console.log(`🔹 PG Base: ${PG_BASE}`);
   console.log(`🔹 Merchant ID: ${MERCHANTID}`);
-  console.log(`🔹 Using OAuth authentication`);
+  console.log(`🔹 Using SIGNATURE-BASED authentication (Client Secret as Salt Key)`);
+  console.log(`🔹 Salt Key length: ${SALT_KEY.length} chars`);
 });
