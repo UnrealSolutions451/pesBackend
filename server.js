@@ -21,9 +21,20 @@ if (!admin.apps.length) {
 }
 const db = admin.firestore();
 
+const MODE = process.env.MODE || 'test';
+
 // PHONEPE CONFIG - CORRECTED ENDPOINTS
-const AUTH_BASE = 'https://api.phonepe.com/apis/identity-manager/';
-const PG_BASE = 'https://api.phonepe.com/apis/hermes/pg/'; // Correct PG endpoint
+const AUTH_BASE = MODE === 'live'
+  ? 'https://api.phonepe.com/apis/identity-manager/v1/'
+  : 'https://api-preprod.phonepe.com/apis/pg-sandbox/v1/';
+
+
+const PG_BASE = MODE === 'live'
+  ? 'https://api.phonepe.com/apis/pg/checkout/v2/'
+  : 'https://api-preprod.phonepe.com/apis/pg-sandbox/checkout/v2/'; 
+
+
+// Correct PG endpoint
 const CLIENTID = process.env.PHONEPE_CLIENT_ID;
 const CLIENTSECRET = process.env.PHONEPE_CLIENT_SECRET;
 const MERCHANTID = process.env.PHONEPE_MERCHANT_ID;
@@ -51,7 +62,7 @@ async function getAccessToken() {
     console.log('🔑 Fetching new access token...');
     
     const response = await axios.post(
-      `${AUTH_BASE}v1/oauth/token`,
+      `${AUTH_BASE}/oauth/token`,
       postBody,
       {
         headers: {
@@ -106,12 +117,12 @@ app.post('/api/create-order', async (req, res) => {
     console.log('🔹 Initiating payment:', {
       orderId,
       amount: amountPaise,
-      endpoint: `${PG_BASE}v1/pay`
+      endpoint: `${PG_BASE}pay`
     });
 
     // Try Method 1: Standard PG API endpoint
     const response = await axios.post(
-      `${PG_BASE}v1/pay`,
+      `${PG_BASE}pay`,
       payload,
       {
         headers: {
@@ -194,10 +205,12 @@ app.post('/api/webhook', async (req, res) => {
       .update(`${process.env.WEBHOOK_USER}:${process.env.WEBHOOK_PASS}`)
       .digest('hex');
 
-    if (authHeader !== expectedAuth) {
-      console.warn('⚠️ Unauthorized webhook access');
-      return res.status(401).send('Unauthorized');
-    }
+      //Commented below code forTest mode
+
+    // if (authHeader !== expectedAuth) {
+    //   console.warn('⚠️ Unauthorized webhook access');
+    //   return res.status(401).send('Unauthorized');
+    // }
 
     const payload = req.body;
     console.log('🔔 Valid webhook received:', JSON.stringify(payload, null, 2));
@@ -253,7 +266,7 @@ app.get('/api/order-status', async (req, res) => {
       const token = await getAccessToken();
 
       const statusResponse = await axios.get(
-        `${PG_BASE}v1/status/${MERCHANTID}/${orderId}`,
+        `${PG_BASE}status/${MERCHANTID}/${orderId}`,
         {
           headers: {
             'Content-Type': 'application/json',
