@@ -1,10 +1,10 @@
-const express = require('express');
-const axios = require('axios');
-const crypto = require('crypto');
-const dotenv = require('dotenv');
-const cors = require('cors');
-const admin = require('firebase-admin');
-const qs = require('qs');
+const express = require("express");
+const axios = require("axios");
+const dotenv = require("dotenv");
+const cors = require("cors");
+const admin = require("firebase-admin");
+const qs = require("qs");
+const crypto = require("crypto");
 
 dotenv.config();
 
@@ -17,408 +17,211 @@ const port = process.env.PORT || 4000;
 // FIREBASE SETUP
 if (!admin.apps.length) {
   admin.initializeApp({
-    credential: admin.credential.applicationDefault()
+    credential: admin.credential.applicationDefault(),
   });
 }
 const db = admin.firestore();
 
-// ============================================
-// PHONEPE V2 API CONFIGURATION (CORRECT)
-// ============================================
-const MODE = process.env.MODE || 'test';
+// MODE CONFIG
+const MODE = process.env.MODE || "test";
 
-const CONFIG = {
-  AUTH_URL: MODE === 'live'
-    ? 'https://api.phonepe.com/apis/identity-manager/v1/oauth/token'
-    : 'https://api-preprod.phonepe.com/apis/identity-manager/v1/oauth/token',
-  
-  PG_BASE: MODE === 'live'
-    ? 'https://api.phonepe.com/apis/pg/checkout/v2'
-    : 'https://api-preprod.phonepe.com/apis/pg/checkout/v2',
-  
-  CLIENT_ID: process.env.PHONEPE_CLIENT_ID,
-  CLIENT_SECRET: process.env.PHONEPE_CLIENT_SECRET,
-  MERCHANT_ID: process.env.PHONEPE_MERCHANT_ID,
-  FRONTEND_URL: process.env.MERCHANT_BASE_URL,
-  BACKEND_URL: 'https://pesbackend.onrender.com'
-};
+// ✅ CORRECT V2 ENDPOINTS
+const AUTH_BASE =
+  MODE === "live"
+    ? "https://api.phonepe.com/apis/identity-manager/v1/"
+    : "https://api-preprod.phonepe.com/apis/identity-manager/v1/";
 
-console.log('🚀 PhonePe V2 Configuration:');
-console.log(`   Mode: ${MODE === 'live' ? '🔴 PRODUCTION' : '🟡 TEST'}`);
-console.log(`   Merchant ID: ${CONFIG.MERCHANT_ID}`);
-console.log(`   Client ID: ${CONFIG.CLIENT_ID}`);
-console.log(`   Frontend: ${CONFIG.FRONTEND_URL}`);
-console.log(`   Backend: ${CONFIG.BACKEND_URL}`);
+const PG_BASE =
+  MODE === "live"
+    ? "https://api.phonepe.com/apis/pg/checkout/v2/"
+    : "https://api-preprod.phonepe.com/apis/pg-sandbox/checkout/v2/";
 
-// Cache for OAuth access token
+const CLIENTID = process.env.PHONEPE_CLIENT_ID;
+const CLIENTSECRET = process.env.PHONEPE_CLIENT_SECRET;
+const MERCHANTID = process.env.PHONEPE_MERCHANT_ID;
+const MERCHANTBASEURL = process.env.MERCHANT_BASE_URL;
+
 let accessToken = null;
 let tokenExpiry = null;
 
-// ============================================
-// GET OAUTH ACCESS TOKEN (V2 Method)
-// ============================================
+// 🟢 GET ACCESS TOKEN (OAuth V2)
 async function getAccessToken() {
-  // Return cached token if still valid
   if (accessToken && tokenExpiry && Date.now() < tokenExpiry) {
-    console.log('✅ Using cached OAuth token');
+    console.log("✅ Using cached token");
     return accessToken;
   }
 
   try {
-    console.log('🔑 Fetching new OAuth token from PhonePe V2...');
+    console.log("🔑 Fetching new access token...");
 
     const postBody = qs.stringify({
-      client_id: CONFIG.CLIENT_ID,
-      client_secret: CONFIG.CLIENT_SECRET,
-      grant_type: 'client_credentials',
-      client_version: '1'
+      client_id: CLIENTID,
+      client_secret: CLIENTSECRET,
+      grant_type: "client_credentials",
     });
 
-    const response = await axios.post(
-      CONFIG.AUTH_URL,
-      postBody,
-      {
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded'
-        }
-      }
-    );
+    const response = await axios.post(`${AUTH_BASE}oauth/token`, postBody, {
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    });
 
-    accessToken = response.data.access_token || response.data.accesstoken;
-    const expiresIn = response.data.expires_in || response.data.expiresin || 3600;
-    tokenExpiry = Date.now() + (expiresIn * 1000) - 60000; // Refresh 1 min early
+    accessToken = response.data.access_token;
+    const expiresIn = response.data.expires_in || 3600;
+    tokenExpiry = Date.now() + expiresIn * 1000 - 60000;
 
-    console.log(`✅ OAuth token obtained (expires in ${expiresIn}s)`);
+    console.log("✅ Access token obtained, expires in:", expiresIn, "seconds");
     return accessToken;
-
   } catch (err) {
-    console.error('❌ OAuth token fetch failed:', {
-      status: err.response?.status,
-      data: err.response?.data,
-      message: err.message
-    });
-    throw new Error('Failed to get OAuth access token');
+    console.error("❌ Token fetch failed:", err.response?.data || err.message);
+    throw new Error("Failed to get access token");
   }
 }
 
-// ============================================
-// CREATE PAYMENT ORDER (V2 API)
-// ============================================
-app.post('/api/create-order', async (req, res) => {
+// 🟣 CREATE ORDER
+app.post("/api/create-order", async (req, res) => {
   try {
     const { items, total, table, sessionId } = req.body;
 
-    // Validate input
-    if (!items || !total || total <= 0) {
-      return res.status(400).json({ 
-        success: false,
-        message: 'Invalid order data - items and total are required' 
-      });
+    if (!items || total == null || total <= 0) {
+      return res.status(400).json({ message: "Invalid order data" });
     }
 
     const orderId = `PES${Date.now()}`;
     const amountPaise = Math.round(total * 100);
-
-    console.log(`\n${'='.repeat(60)}`);
-    console.log('📦 Creating Payment Order:');
-    console.log(`   Order ID: ${orderId}`);
-    console.log(`   Amount: ₹${total} (${amountPaise} paise)`);
-    console.log(`   Items: ${items.length} items`);
-    console.log(`   Session: ${sessionId}`);
-
-    // Get OAuth token
     const token = await getAccessToken();
 
-    // Build V2 payload (using merchantOrderId, NOT merchantTransactionId)
     const payload = {
-      merchantId: CONFIG.MERCHANT_ID,
-      merchantOrderId: orderId, // V2 uses merchantOrderId
+      merchantId: MERCHANTID,
+      merchantTransactionId: orderId,
+      merchantUserId: sessionId || `MUID${Date.now()}`,
       amount: amountPaise,
-      merchantUserId: sessionId || `user_${Date.now()}`,
-      redirectUrl: `${CONFIG.FRONTEND_URL}/payment-return.html?orderId=${orderId}`,
-      redirectMode: 'POST',
-      callbackUrl: `${CONFIG.BACKEND_URL}/api/webhook`,
-      mobileNumber: '9999999999', // Required for some payment methods
-      paymentInstrument: {
-        type: 'PAY_PAGE'
-      }
+      redirectUrl: `${MERCHANTBASEURL}/payment-return.html?orderId=${orderId}`,
+      redirectMode: "POST",
+      callbackUrl: `https://pesbackend.onrender.com/api/webhook`,
+      mobileNumber: "9999999999",
+      paymentInstrument: { type: "PAY_PAGE" },
     };
 
-    console.log('🔹 Payload:', JSON.stringify(payload, null, 2));
+    console.log("🔹 Initiating payment:", {
+      orderId,
+      amount: amountPaise,
+      endpoint: `${PG_BASE}pay`,
+    });
 
-    // Call PhonePe V2 Create Payment API
-    const response = await axios.post(
-      `${CONFIG.PG_BASE}/pay`,
-      payload,
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-          'X-MERCHANT-ID': CONFIG.MERCHANT_ID
-        }
-      }
-    );
+    const response = await axios.post(`${PG_BASE}pay`, payload, {
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `O-Bearer ${token}`,
+        "X-MERCHANT-ID": MERCHANTID,
+      },
+    });
 
     const phonepeResp = response.data;
-    console.log('✅ PhonePe V2 Response:', JSON.stringify(phonepeResp, null, 2));
+    console.log("✅ PhonePe Response:", JSON.stringify(phonepeResp, null, 2));
 
-    // Save order in Firestore
-    await db.collection('orders').doc(orderId).set({
+    await db.collection("orders").doc(orderId).set({
       merchantOrderId: orderId,
       items,
       table,
       sessionId,
       amount: total,
-      status: 'PENDING',
-      mode: MODE,
+      status: "PENDING",
       phonepeResponse: phonepeResp,
-      createdAt: admin.firestore.FieldValue.serverTimestamp()
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
-    // Extract checkout URL from V2 response
-    const checkoutUrl = phonepeResp.data?.url || phonepeResp.data?.redirectUrl;
+    const checkoutUrl =
+      phonepeResp.data?.instrumentResponse?.redirectInfo?.url ||
+      phonepeResp.data?.redirectUrl ||
+      phonepeResp.redirectUrl;
 
     if (!checkoutUrl) {
-      console.error('❌ No checkout URL in response');
-      throw new Error('No checkout URL returned from PhonePe');
+      throw new Error("No checkout URL in response");
     }
 
-    console.log('✅ Checkout URL:', checkoutUrl);
-    console.log(`${'='.repeat(60)}\n`);
-
-    res.json({
-      success: true,
-      orderId,
-      checkoutUrl,
-      message: 'Payment initiated successfully'
-    });
-
+    res.json({ success: true, orderId, checkoutUrl });
   } catch (err) {
-    console.error('❌ Create order failed:', {
+    console.error("❌ Order create failed:", {
       status: err.response?.status,
-      statusText: err.response?.statusText,
       data: err.response?.data,
-      message: err.message
+      message: err.message,
     });
-
-    // Handle specific error cases
-    if (err.response?.status === 401 || err.response?.data?.code === 'AUTHORIZATION_FAILED') {
-      // Clear token cache and suggest retry
-      accessToken = null;
-      tokenExpiry = null;
-      
-      return res.status(401).json({
-        success: false,
-        message: 'Authentication failed. Please try again.',
-        error: 'AUTHORIZATION_FAILED'
-      });
-    }
-
     res.status(500).json({
       success: false,
-      message: 'Failed to create payment order',
-      error: err.response?.data || err.message
+      message: "Create order failed",
+      error: err.response?.data || err.message,
     });
   }
 });
 
-// ============================================
-// PHONEPE WEBHOOK HANDLER (V2)
-// ============================================
-app.post('/api/webhook', async (req, res) => {
+// 🟡 WEBHOOK HANDLER
+app.post("/api/webhook", async (req, res) => {
   try {
-    console.log('\n🔔 Webhook received from PhonePe');
-    console.log('Headers:', JSON.stringify(req.headers, null, 2));
-    console.log('Body:', JSON.stringify(req.body, null, 2));
-
     const payload = req.body;
+    console.log("🔔 Webhook received:", JSON.stringify(payload, null, 2));
 
-    // Extract order ID (V2 can send in different formats)
-    const orderId = 
-      payload.merchantOrderId ||
-      payload.data?.merchantOrderId ||
-      payload.transactionId;
+    const orderId =
+      payload.data?.merchantTransactionId || payload.merchantTransactionId;
 
-    if (!orderId) {
-      console.error('❌ No order ID found in webhook');
-      return res.status(400).send('Missing order ID');
+    const status =
+      payload.code === "PAYMENT_SUCCESS" ||
+      payload.data?.state === "COMPLETED"
+        ? "SUCCESS"
+        : "FAILED";
+
+    if (orderId) {
+      await db.collection("orders").doc(orderId).update({
+        status,
+        phonepeCallback: payload,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      console.log("✅ Order updated:", orderId, status);
     }
 
-    // Determine payment status
-    let status = 'PENDING';
-    if (payload.code === 'PAYMENT_SUCCESS' || payload.status === 'SUCCESS') {
-      status = 'SUCCESS';
-    } else if (payload.code === 'PAYMENT_ERROR' || payload.status === 'FAILED') {
-      status = 'FAILED';
-    }
-
-    console.log(`📝 Updating order ${orderId} to status: ${status}`);
-
-    // Update order in Firestore
-    await db.collection('orders').doc(orderId).update({
-      status,
-      phonepeCallback: payload,
-      callbackReceivedAt: admin.firestore.FieldValue.serverTimestamp(),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp()
-    });
-
-    console.log('✅ Order updated successfully');
-    res.status(200).send('OK');
-
+    res.status(200).send("OK");
   } catch (err) {
-    console.error('❌ Webhook processing error:', err);
-    res.status(500).send('Error processing webhook');
+    console.error("❌ Webhook error:", err);
+    res.status(500).send("Error");
   }
 });
 
-// ============================================
-// CHECK ORDER STATUS (V2 API)
-// ============================================
-app.get('/api/order-status', async (req, res) => {
+// 🟢 ORDER STATUS CHECK
+app.get("/api/order-status", async (req, res) => {
   const orderId = req.query.orderId;
+  if (!orderId) return res.status(400).json({ message: "Missing orderId" });
 
-  if (!orderId) {
-    return res.status(400).json({ 
-      success: false,
-      message: 'Order ID is required' 
-    });
-  }
-
-  try {
-    console.log(`🔍 Checking status for order: ${orderId}`);
-
-    // Get order from Firestore
-    const doc = await db.collection('orders').doc(orderId).get();
-
-    if (!doc.exists) {
-      return res.status(404).json({ 
-        success: false,
-        message: 'Order not found' 
-      });
-    }
-
-    const orderData = doc.data();
-
-    // Also check with PhonePe V2 API
-    try {
-      const token = await getAccessToken();
-
-      const statusResponse = await axios.get(
-        `${CONFIG.PG_BASE}/order/${orderId}/status`,
-        {
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`,
-            'X-MERCHANT-ID': CONFIG.MERCHANT_ID
-          }
-        }
-      );
-
-      console.log('📊 PhonePe status:', statusResponse.data);
-
-      // Update local status if PhonePe has newer info
-      const phonepeStatus = statusResponse.data.status;
-      if (phonepeStatus && phonepeStatus !== orderData.status) {
-        await db.collection('orders').doc(orderId).update({
-          status: phonepeStatus,
-          lastStatusCheck: admin.firestore.FieldValue.serverTimestamp()
-        });
-      }
-
-      return res.json({
-        success: true,
-        orderId,
-        status: phonepeStatus || orderData.status,
-        order: orderData,
-        phonepeData: statusResponse.data
-      });
-
-    } catch (statusErr) {
-      // If PhonePe API fails, return local data
-      console.warn('⚠️ Could not fetch from PhonePe, using local data');
-      
-      return res.json({
-        success: true,
-        orderId,
-        status: orderData.status,
-        order: orderData,
-        note: 'Using cached data (PhonePe API unavailable)'
-      });
-    }
-
-  } catch (err) {
-    console.error('❌ Status check error:', err);
-    res.status(500).json({ 
-      success: false,
-      message: 'Error checking order status' 
-    });
-  }
-});
-
-// ============================================
-// TEST TOKEN ENDPOINT
-// ============================================
-app.get('/api/test-token', async (req, res) => {
   try {
     const token = await getAccessToken();
-    res.json({
-      success: true,
-      message: 'OAuth token obtained successfully',
-      tokenPreview: token.substring(0, 30) + '...',
-      expiresAt: tokenExpiry ? new Date(tokenExpiry).toISOString() : 'N/A',
-      config: {
-        mode: MODE,
-        authUrl: CONFIG.AUTH_URL,
-        pgBase: CONFIG.PG_BASE,
-        merchantId: CONFIG.MERCHANT_ID
-      }
+    const response = await axios.get(`${PG_BASE}order/${orderId}/status`, {
+      headers: {
+        Authorization: `O-Bearer ${token}`,
+        "X-MERCHANT-ID": MERCHANTID,
+      },
     });
+
+    res.json({ success: true, statusData: response.data });
   } catch (err) {
+    console.error("❌ Order status failed:", err.response?.data || err.message);
     res.status(500).json({
       success: false,
-      error: err.message
+      error: err.response?.data || err.message,
     });
   }
 });
 
-// ============================================
-// ROOT ENDPOINT
-// ============================================
-app.get('/', (req, res) => {
+// ROOT
+app.get("/", (req, res) =>
   res.json({
-    status: 'running',
-    name: 'PES Canteen Payment Backend',
-    version: '2.0 (PhonePe V2 API)',
-    mode: MODE === 'live' ? 'PRODUCTION' : 'TEST',
+    status: "running",
+    mode: MODE,
+    message: "PES Canteen PhonePe V2 Backend",
     timestamp: new Date().toISOString(),
-    endpoints: {
-      createOrder: 'POST /api/create-order',
-      webhook: 'POST /api/webhook',
-      orderStatus: 'GET /api/order-status?orderId=xxx',
-      testToken: 'GET /api/test-token'
-    },
-    documentation: {
-      authorization: 'https://developer.phonepe.com/payment-gateway/website-integration/standard-checkout/api-integration/api-reference/authorization/',
-      createPayment: 'https://developer.phonepe.com/payment-gateway/website-integration/standard-checkout/api-integration/api-reference/create-payment/',
-      orderStatus: 'https://developer.phonepe.com/payment-gateway/website-integration/standard-checkout/api-integration/api-reference/order-status/'
-    }
-  });
-});
+  })
+);
 
-// ============================================
 // START SERVER
-// ============================================
 app.listen(port, () => {
-  console.log('\n' + '='.repeat(70));
-  console.log('🎉 PES CANTEEN PAYMENT BACKEND - PHONEPE V2 API');
-  console.log('='.repeat(70));
   console.log(`✅ Server running on port ${port}`);
-  console.log(`🌍 Mode: ${MODE === 'live' ? '🔴 PRODUCTION' : '🟡 TEST'}`);
-  console.log(`🏪 Merchant ID: ${CONFIG.MERCHANT_ID}`);
-  console.log(`🔐 Client ID: ${CONFIG.CLIENT_ID}`);
-  console.log(`🌐 Frontend: ${CONFIG.FRONTEND_URL}`);
-  console.log(`🔗 Backend: ${CONFIG.BACKEND_URL}`);
-  console.log(`📡 Auth URL: ${CONFIG.AUTH_URL}`);
-  console.log(`💳 PG Base: ${CONFIG.PG_BASE}`);
-  console.log('='.repeat(70) + '\n');
+  console.log(`🔹 Auth Base: ${AUTH_BASE}`);
+  console.log(`🔹 PG Base: ${PG_BASE}`);
+  console.log(`🔹 Merchant ID: ${MERCHANTID}`);
 });
