@@ -1,6 +1,5 @@
 const express = require('express');
 const axios = require('axios');
-const crypto = require('crypto');
 const dotenv = require('dotenv');
 const cors = require('cors');
 const admin = require('firebase-admin');
@@ -23,7 +22,7 @@ if (!admin.apps.length) {
 const db = admin.firestore();
 
 // ============================================
-// PHONEPE V2 CONFIG
+// PHONEPE V2 CONFIGURATION
 // ============================================
 const MODE = process.env.MODE || 'test';
 
@@ -53,13 +52,13 @@ console.log(`   Frontend: ${CONFIG.FRONTEND_URL}`);
 console.log(`   Backend: ${CONFIG.BACKEND_URL}`);
 
 // ============================================
-// OAUTH TOKEN CACHING
+// TOKEN CACHE
 // ============================================
 let accessToken = null;
 let tokenExpiry = null;
 
 // ============================================
-// GET OAUTH ACCESS TOKEN (V2 FORMAT)
+// GET ACCESS TOKEN (V2 OAUTH)
 // ============================================
 async function getAccessToken() {
   if (accessToken && tokenExpiry && Date.now() < tokenExpiry) {
@@ -68,18 +67,21 @@ async function getAccessToken() {
   }
 
   try {
-    console.log('🔑 Fetching new OAuth token from PhonePe V2...');
+    console.log('🔑 Fetching new access token...');
 
-    // NOTE: No client_version in body, it causes "Api Mapping Not Found"
-    const postBody = qs.stringify({
-      grant_type: 'client_credentials',
-      client_id: CONFIG.CLIENT_ID,
-      client_secret: CONFIG.CLIENT_SECRET
-    });
-
-    const response = await axios.post(CONFIG.AUTH_URL, postBody, {
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
-    });
+    const response = await axios.post(
+      CONFIG.AUTH_URL,
+      qs.stringify({
+        grant_type: 'client_credentials',
+        client_id: CONFIG.CLIENT_ID,
+        client_secret: CONFIG.CLIENT_SECRET
+      }),
+      {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        }
+      }
+    );
 
     if (!response.data.access_token) {
       console.error('❌ Invalid token response:', response.data);
@@ -90,7 +92,7 @@ async function getAccessToken() {
     const expiresIn = response.data.expires_in || 3600;
     tokenExpiry = Date.now() + expiresIn * 1000 - 60000;
 
-    console.log(`✅ Access token obtained, expires in ${expiresIn}s`);
+    console.log(`✅ Access token obtained, expires in: ${expiresIn} seconds`);
     return accessToken;
   } catch (err) {
     console.error('❌ Token fetch failed:', err.response?.data || err.message);
@@ -99,7 +101,7 @@ async function getAccessToken() {
 }
 
 // ============================================
-// CREATE PAYMENT ORDER (V2 API)
+// CREATE PAYMENT ORDER
 // ============================================
 app.post('/api/create-order', async (req, res) => {
   try {
@@ -116,7 +118,6 @@ app.post('/api/create-order', async (req, res) => {
     console.log('📦 Creating Payment Order:');
     console.log(`   Order ID: ${orderId}`);
     console.log(`   Amount: ₹${total} (${amountPaise} paise)`);
-    console.log(`   Session: ${sessionId}`);
 
     const token = await getAccessToken();
 
@@ -135,7 +136,7 @@ app.post('/api/create-order', async (req, res) => {
 
     const response = await axios.post(`${CONFIG.PG_BASE}/pay`, payload, {
       headers: {
-        'Authorization': `Bearer ${token}`,
+        Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
         'X-MERCHANT-ID': CONFIG.MERCHANT_ID
       }
@@ -156,9 +157,7 @@ app.post('/api/create-order', async (req, res) => {
     });
 
     const checkoutUrl = phonepeResp.data?.instrumentResponse?.redirectInfo?.url;
-    if (!checkoutUrl) {
-      throw new Error('No checkout URL in PhonePe response');
-    }
+    if (!checkoutUrl) throw new Error('No checkout URL in PhonePe response');
 
     console.log('✅ Checkout URL:', checkoutUrl);
     console.log('='.repeat(60) + '\n');
@@ -180,7 +179,7 @@ app.post('/api/create-order', async (req, res) => {
 });
 
 // ============================================
-// PHONEPE WEBHOOK HANDLER
+// WEBHOOK HANDLER
 // ============================================
 app.post('/api/webhook', async (req, res) => {
   try {
@@ -213,7 +212,7 @@ app.post('/api/webhook', async (req, res) => {
 });
 
 // ============================================
-// ORDER STATUS CHECK
+// CHECK ORDER STATUS
 // ============================================
 app.get('/api/order-status', async (req, res) => {
   const orderId = req.query.orderId;
@@ -223,7 +222,7 @@ app.get('/api/order-status', async (req, res) => {
     const token = await getAccessToken();
     const response = await axios.get(`${CONFIG.PG_BASE}/order/${orderId}/status`, {
       headers: {
-        'Authorization': `Bearer ${token}`,
+        Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
         'X-MERCHANT-ID': CONFIG.MERCHANT_ID
       }
