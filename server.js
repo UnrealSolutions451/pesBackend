@@ -16,11 +16,22 @@ const port = process.env.PORT || 4000;
 // FIREBASE SETUP
 // ============================================
 if (!admin.apps.length) {
-  const serviceAccount = require('./serviceAccountKey.json');
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount)
-  });
+  try {
+    if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+      // Parse the JSON string from Render environment variable
+      const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+      admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount)
+      });
+      console.log('✅ Firebase initialized from environment variable');
+    } else {
+      console.warn('⚠️ FIREBASE_SERVICE_ACCOUNT not found — Firebase not initialized.');
+    }
+  } catch (err) {
+    console.error('❌ Failed to initialize Firebase:', err.message);
+  }
 }
+
 const db = admin.firestore();
 
 // ============================================
