@@ -142,29 +142,32 @@ app.post('/api/create-order', async (req, res) => {
 
     if (sdkAvailable && phonePeClient) {
   console.log('🔹 Using PhonePe SDK...');
-  const { StandardCheckoutPayRequest } = require('pg-sdk-node');
+  const { StandardCheckoutPayRequest, PgPaymentFlow } = require('pg-sdk-node');
 
   try {
-    // 🧩 Diagnostic snippet: log available builder methods
+    // 🧩 Debug: see what builder methods exist in this SDK version
     const builder = StandardCheckoutPayRequest.builder();
-    console.log('🧩 Debug builder keys:', Object.keys(builder));
+    console.log('🧩 Builder supports:', Object.keys(builder));
 
+    // ✅ Build the payment request using correct available fields
     const paymentRequest = builder
       .merchantOrderId(orderId)
       .amount(amountPaise)
-      .merchantUserId(`${sessionId || 'user'}_${Date.now()}`) // ✅ Fixed method name and ensured string
       .redirectUrl(`${FRONTEND_URL}/payment-return.html?orderId=${orderId}`)
-      .redirectMode('POST') // ✅ Required for proper redirect handling
-      .callbackUrl(`${BACKEND_URL}/api/webhook`)
-      .paymentInstrument({
-        type: 'PAY_PAGE' // ✅ Required in V2 SDK
+      .metaInfo({
+        merchantUserId: `${sessionId || 'user'}_${Date.now()}`,
+        callbackUrl: `${BACKEND_URL}/api/webhook`,
+        paymentInstrument: 'PAY_PAGE'
       })
       .build();
 
-    response = await phonePeClient.pay(paymentRequest);
+    // ✅ Pass the flow type explicitly
+    response = await phonePeClient.pay(paymentRequest, PgPaymentFlow.STANDARD_CHECKOUT);
+    console.log('✅ SDK Payment Response:', JSON.stringify(response, null, 2));
+
   } catch (sdkErr) {
     console.error('⚠️ SDK payment creation failed, falling back to manual API:', sdkErr.message);
-    sdkAvailable = false; // disable SDK for this session
+    sdkAvailable = false; // Disable SDK for next attempts
     throw sdkErr;
   }
 
@@ -190,8 +193,10 @@ app.post('/api/create-order', async (req, res) => {
       'X-MERCHANT-ID': MERCHANT_ID
     }
   });
+
   response = apiResponse.data;
 }
+
 
 
 
