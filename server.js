@@ -145,7 +145,11 @@ app.post('/api/create-order', async (req, res) => {
   const { StandardCheckoutPayRequest } = require('pg-sdk-node');
 
   try {
-    const paymentRequest = StandardCheckoutPayRequest.builder()
+    // 🧩 Diagnostic snippet: log available builder methods
+    const builder = StandardCheckoutPayRequest.builder();
+    console.log('🧩 Debug builder keys:', Object.keys(builder));
+
+    const paymentRequest = builder
       .merchantOrderId(orderId)
       .amount(amountPaise)
       .merchantUserId(`${sessionId || 'user'}_${Date.now()}`) // ✅ Fixed method name and ensured string
@@ -161,7 +165,6 @@ app.post('/api/create-order', async (req, res) => {
   } catch (sdkErr) {
     console.error('⚠️ SDK payment creation failed, falling back to manual API:', sdkErr.message);
     sdkAvailable = false; // disable SDK for this session
-    // fallback below will handle it
     throw sdkErr;
   }
 
@@ -189,6 +192,7 @@ app.post('/api/create-order', async (req, res) => {
   });
   response = apiResponse.data;
 }
+
 
 
     console.log('✅ Payment created:', JSON.stringify(response, null, 2));
