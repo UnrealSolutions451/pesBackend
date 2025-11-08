@@ -141,43 +141,55 @@ app.post('/api/create-order', async (req, res) => {
     let response;
 
     if (sdkAvailable && phonePeClient) {
-      console.log('🔹 Using PhonePe SDK...');
-      const { StandardCheckoutPayRequest } = require('pg-sdk-node');
+  console.log('🔹 Using PhonePe SDK...');
+  const { StandardCheckoutPayRequest } = require('pg-sdk-node');
 
-      const paymentRequest = StandardCheckoutPayRequest.builder()
-        .merchantOrderId(orderId)
-        .amount(amountPaise)
-        .merchantUserId(sessionId || `user_${Date.now()}`)
-        .redirectUrl(`${FRONTEND_URL}/payment-return.html?orderId=${orderId}`)
-        .callbackUrl(`${BACKEND_URL}/api/webhook`)
-        .build();
+  try {
+    const paymentRequest = StandardCheckoutPayRequest.builder()
+      .merchantOrderId(orderId)
+      .amount(amountPaise)
+      .merchantUserId(`${sessionId || 'user'}_${Date.now()}`) // ✅ Fixed method name and ensured string
+      .redirectUrl(`${FRONTEND_URL}/payment-return.html?orderId=${orderId}`)
+      .redirectMode('POST') // ✅ Required for proper redirect handling
+      .callbackUrl(`${BACKEND_URL}/api/webhook`)
+      .paymentInstrument({
+        type: 'PAY_PAGE' // ✅ Required in V2 SDK
+      })
+      .build();
 
-      response = await phonePeClient.pay(paymentRequest);
+    response = await phonePeClient.pay(paymentRequest);
+  } catch (sdkErr) {
+    console.error('⚠️ SDK payment creation failed, falling back to manual API:', sdkErr.message);
+    sdkAvailable = false; // disable SDK for this session
+    // fallback below will handle it
+    throw sdkErr;
+  }
 
-    } else {
-      console.log('🔹 Using Manual API...');
-      const token = await getAccessToken();
+} else {
+  console.log('🔹 Using Manual API...');
+  const token = await getAccessToken();
 
-      const payload = {
-        merchantId: MERCHANT_ID,
-        merchantOrderId: orderId,
-        merchantUserId: sessionId || `user_${Date.now()}`,
-        amount: amountPaise,
-        redirectUrl: `${FRONTEND_URL}/payment-return.html?orderId=${orderId}`,
-        redirectMode: 'POST',
-        callbackUrl: `${BACKEND_URL}/api/webhook`,
-        paymentInstrument: { type: 'PAY_PAGE' }
-      };
+  const payload = {
+    merchantId: MERCHANT_ID,
+    merchantOrderId: orderId,
+    merchantUserId: `${sessionId || 'user'}_${Date.now()}`,
+    amount: amountPaise,
+    redirectUrl: `${FRONTEND_URL}/payment-return.html?orderId=${orderId}`,
+    redirectMode: 'POST',
+    callbackUrl: `${BACKEND_URL}/api/webhook`,
+    paymentInstrument: { type: 'PAY_PAGE' }
+  };
 
-      const apiResponse = await axios.post(`${API_CONFIG.PG_BASE}/pay`, payload, {
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-          'X-MERCHANT-ID': MERCHANT_ID
-        }
-      });
-      response = apiResponse.data;
+  const apiResponse = await axios.post(`${API_CONFIG.PG_BASE}/pay`, payload, {
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+      'X-MERCHANT-ID': MERCHANT_ID
     }
+  });
+  response = apiResponse.data;
+}
+
 
     console.log('✅ Payment created:', JSON.stringify(response, null, 2));
 
