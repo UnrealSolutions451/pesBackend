@@ -14,23 +14,59 @@ const port = process.env.PORT || 4000;
 // ============================================
 // FIREBASE SETUP (Fixed)
 // ============================================
+let db = null;
+
 if (!admin.apps.length) {
   try {
-    // Parse the service account from environment variable
-    const serviceAccount = JSON.parse(
-      process.env.FIREBASE_SERVICE_ACCOUNT.replace(/\\n/g, '\n')
-    );
+    console.log('🔄 Initializing Firebase...');
     
-    admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount)
-    });
-    console.log('✅ Firebase initialized successfully');
+    // Method 1: Try parsing as JSON string first
+    let serviceAccount;
+    if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+      try {
+        // Replace escaped newlines with actual newlines
+        const serviceAccountString = process.env.FIREBASE_SERVICE_ACCOUNT.replace(/\\n/g, '\n');
+        serviceAccount = JSON.parse(serviceAccountString);
+        console.log('✅ Firebase service account parsed from environment variable');
+      } catch (parseError) {
+        console.log('⚠️  Could not parse FIREBASE_SERVICE_ACCOUNT, trying alternative methods...');
+      }
+    }
+    
+    // Method 2: If parsing failed, try individual environment variables
+    if (!serviceAccount && process.env.FIREBASE_PRIVATE_KEY) {
+      serviceAccount = {
+        type: "service_account",
+        project_id: process.env.FIREBASE_PROJECT_ID || "pes-canteen",
+        private_key_id: process.env.FIREBASE_PRIVATE_KEY_ID,
+        private_key: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+        client_email: process.env.FIREBASE_CLIENT_EMAIL || "firebase-adminsdk-fbsvc@pes-canteen.iam.gserviceaccount.com",
+        client_id: process.env.FIREBASE_CLIENT_ID,
+        auth_uri: "https://accounts.google.com/o/oauth2/auth",
+        token_uri: "https://oauth2.googleapis.com/token",
+        auth_provider_x509_cert_url: "https://www.googleapis.com/oauth2/v1/certs",
+        client_x509_cert_url: process.env.FIREBASE_CLIENT_CERT_URL || "https://www.googleapis.com/robot/v1/metadata/x509/firebase-adminsdk-fbsvc%40pes-canteen.iam.gserviceaccount.com"
+      };
+      console.log('✅ Firebase service account created from individual environment variables');
+    }
+    
+    if (serviceAccount) {
+      admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount)
+      });
+      db = admin.firestore();
+      console.log('✅ Firebase initialized successfully');
+    } else {
+      console.log('ℹ️  Firebase not initialized - no valid credentials found');
+    }
+    
   } catch (firebaseError) {
     console.error('❌ Firebase initialization failed:', firebaseError.message);
-    console.log('📌 Continuing without Firebase - some features may not work');
+    console.log('📌 Continuing without Firebase - order tracking will be limited');
   }
+} else {
+  db = admin.firestore();
 }
-const db = admin.apps.length ? admin.firestore() : null;
 
 // ============================================
 // PHONEPE CONFIGURATION
@@ -413,3 +449,4 @@ app.listen(port, () => {
   console.log(`🌐 Health check: http://localhost:${port}/health`);
   console.log(`🔧 Test endpoint: http://localhost:${port}/api/test\n`);
 });
+
