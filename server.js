@@ -12,17 +12,28 @@ app.use(cors());
 const port = process.env.PORT || 4000;
 
 // ============================================
-// FIREBASE SETUP
+// FIREBASE SETUP (Fixed)
 // ============================================
 if (!admin.apps.length) {
-  admin.initializeApp({
-    credential: admin.credential.applicationDefault()
-  });
+  try {
+    // Parse the service account from environment variable
+    const serviceAccount = JSON.parse(
+      process.env.FIREBASE_SERVICE_ACCOUNT.replace(/\\n/g, '\n')
+    );
+    
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount)
+    });
+    console.log('✅ Firebase initialized successfully');
+  } catch (firebaseError) {
+    console.error('❌ Firebase initialization failed:', firebaseError.message);
+    console.log('📌 Continuing without Firebase - some features may not work');
+  }
 }
-const db = admin.firestore();
+const db = admin.apps.length ? admin.firestore() : null;
 
 // ============================================
-// PHONEPE SDK INITIALIZATION (With Error Handling)
+// PHONEPE CONFIGURATION
 // ============================================
 const PHONEPE_ENV = process.env.PHONEPE_ENV || 'TEST';
 const MERCHANT_ID = process.env.PHONEPE_MERCHANT_ID;
@@ -31,55 +42,19 @@ const CLIENT_SECRET = process.env.PHONEPE_CLIENT_SECRET;
 const FRONTEND_URL = process.env.FRONTEND_URL;
 const BACKEND_URL = process.env.BACKEND_URL || 'https://pesbackend.onrender.com';
 
-let phonePeClient = null;
-let sdkAvailable = false;
-
-// Try to load PhonePe SDK with fallback
-try {
-  console.log('🔄 Attempting to load PhonePe SDK...');
-  
-  const PhonePeSDK = require('pg-sdk-node');
-  
-  // Check what's actually exported
-  console.log('📦 SDK exports:', Object.keys(PhonePeSDK));
-  
-  // Try different possible export structures
-  const PhonePeClient = PhonePeSDK.PhonePeClient || PhonePeSDK.default?.PhonePeClient || PhonePeSDK;
-  const Environment = PhonePeSDK.Environment || PhonePeSDK.default?.Environment || {
-    PRODUCTION: 'PRODUCTION',
-    SANDBOX: 'SANDBOX'
-  };
-  
-  // Initialize client
-  phonePeClient = new PhonePeClient({
-    merchantId: MERCHANT_ID,
-    clientId: CLIENT_ID,
-    clientSecret: CLIENT_SECRET,
-    environment: PHONEPE_ENV === 'LIVE' ? Environment.PRODUCTION : Environment.SANDBOX
-  });
-  
-  sdkAvailable = true;
-  console.log('✅ PhonePe SDK loaded successfully');
-  
-} catch (sdkError) {
-  console.error('⚠️  PhonePe SDK not available:', sdkError.message);
-  console.log('📌 Falling back to manual API integration');
-  sdkAvailable = false;
-}
-
 console.log('\n' + '='.repeat(70));
 console.log('🚀 PES CANTEEN PAYMENT BACKEND');
 console.log('='.repeat(70));
 console.log(`✅ Environment: ${PHONEPE_ENV === 'LIVE' ? '🔴 PRODUCTION' : '🟡 TEST'}`);
-console.log(`📦 SDK Available: ${sdkAvailable ? '✅ YES' : '❌ NO (Using Manual API)'}`);
-console.log(`🏪 Merchant ID: ${MERCHANT_ID}`);
-console.log(`🔐 Client ID: ${CLIENT_ID}`);
+console.log(`🏪 Merchant ID: ${MERCHANT_ID ? '✅ Set' : '❌ Missing'}`);
+console.log(`🔐 Client ID: ${CLIENT_ID ? '✅ Set' : '❌ Missing'}`);
 console.log(`🌐 Frontend: ${FRONTEND_URL}`);
 console.log(`🔗 Backend: ${BACKEND_URL}`);
+console.log(`🔥 Firebase: ${db ? '✅ Connected' : '❌ Not Available'}`);
 console.log('='.repeat(70) + '\n');
 
 // ============================================
-// MANUAL API INTEGRATION (Fallback)
+// MANUAL API INTEGRATION (Primary Method)
 // ============================================
 const axios = require('axios');
 const qs = require('qs');
@@ -111,133 +86,133 @@ async function getAccessToken() {
     });
 
     const response = await axios.post(API_CONFIG.AUTH_URL, postBody, {
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+      headers: { 
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Accept': 'application/json'
+      }
     });
 
-    accessToken = response.data.access_token || response.data.accesstoken;
+    accessToken = response.data.access_token;
     const expiresIn = response.data.expires_in || 3600;
-    tokenExpiry = Date.now() + (expiresIn * 1000) - 60000;
+    tokenExpiry = Date.now() + (expiresIn * 1000) - 60000; // 1 minute buffer
 
-    console.log('✅ OAuth token obtained');
+    console.log('✅ OAuth token obtained successfully');
     return accessToken;
 
   } catch (err) {
     console.error('❌ Token fetch failed:', err.response?.data || err.message);
-    throw new Error('Failed to get OAuth token');
+    throw new Error('Failed to get OAuth token: ' + (err.response?.data?.message || err.message));
   }
 }
 
 // ============================================
-// CREATE PAYMENT ORDER (SDK or Manual API)
+// CREATE PAYMENT ORDER
 // ============================================
 app.post('/api/create-order', async (req, res) => {
   try {
     const { items, total, table, sessionId } = req.body;
 
+    console.log('📦 Received order request:', { table, sessionId, total });
+
     if (!items || !total || total <= 0) {
       return res.status(400).json({
         success: false,
-        message: 'Invalid order data'
+        message: 'Invalid order data: items and total amount are required'
+      });
+    }
+
+    // Validate credentials
+    if (!MERCHANT_ID || !CLIENT_ID || !CLIENT_SECRET) {
+      return res.status(500).json({
+        success: false,
+        message: 'Payment gateway configuration missing'
       });
     }
 
     const orderId = `PES${Date.now()}`;
     const amountPaise = Math.round(total * 100);
 
-    console.log(`\n📦 Creating Order: ${orderId} | Amount: ₹${total}`);
+    console.log(`📦 Creating Order: ${orderId} | Amount: ₹${total} (${amountPaise} paise)`);
 
-    // Try SDK first, fallback to manual API
-    let response;
-    
-    if (sdkAvailable && phonePeClient) {
-      console.log('🔹 Using PhonePe SDK...');
-      
-      try {
-        const StandardCheckoutPayRequest = require('pg-sdk-node').StandardCheckoutPayRequest;
-        
-        const paymentRequest = StandardCheckoutPayRequest.builder()
-          .merchantOrderId(orderId)
-          .amount(amountPaise)
-          .merchantUserId(sessionId || `user_${Date.now()}`)
-          .redirectUrl(`${FRONTEND_URL}/payment-return.html?orderId=${orderId}`)
-          .callbackUrl(`${BACKEND_URL}/api/webhook`)
-          .build();
+    // Get access token
+    const token = await getAccessToken();
 
-        response = await phonePeClient.pay(paymentRequest);
-        
-      } catch (sdkErr) {
-        console.warn('⚠️  SDK method failed, trying manual API...');
-        sdkAvailable = false; // Disable SDK for future requests
-        throw sdkErr; // Fall through to manual API
-      }
-      
-    } else {
-      console.log('🔹 Using Manual API...');
-      
-      const token = await getAccessToken();
-
-      const payload = {
-        merchantId: MERCHANT_ID,
-        merchantOrderId: orderId,
-        amount: amountPaise,
-        merchantUserId: sessionId || `user_${Date.now()}`,
-        redirectUrl: `${FRONTEND_URL}/payment-return.html?orderId=${orderId}`,
-        redirectMode: 'POST',
-        callbackUrl: `${BACKEND_URL}/api/webhook`,
-        mobileNumber: '9999999999',
-        paymentInstrument: { type: 'PAY_PAGE' }
-      };
-
-      const apiResponse = await axios.post(
-        `${API_CONFIG.PG_BASE}/pay`,
-        payload,
-        {
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`,
-            'X-MERCHANT-ID': MERCHANT_ID
-          }
-        }
-      );
-
-      response = apiResponse.data;
-    }
-
-    console.log('✅ Payment created:', JSON.stringify(response, null, 2));
-
-    // Save order
-    await db.collection('orders').doc(orderId).set({
+    const payload = {
+      merchantId: MERCHANT_ID,
       merchantOrderId: orderId,
-      items,
-      table,
-      sessionId,
-      amount: total,
-      status: 'PENDING',
-      environment: PHONEPE_ENV,
-      method: sdkAvailable ? 'SDK' : 'Manual API',
-      phonepeResponse: response,
-      createdAt: admin.firestore.FieldValue.serverTimestamp()
-    });
+      amount: amountPaise,
+      merchantUserId: sessionId || `user_${Date.now()}`,
+      redirectUrl: `${FRONTEND_URL}/payment-return.html?orderId=${orderId}`,
+      redirectMode: 'POST',
+      callbackUrl: `${BACKEND_URL}/api/webhook`,
+      mobileNumber: '9999999999', // Default number
+      paymentInstrument: { 
+        type: 'PAY_PAGE' 
+      }
+    };
+
+    console.log('🔹 Sending payment request to PhonePe...');
+    
+    const apiResponse = await axios.post(
+      `${API_CONFIG.PG_BASE}/pay`,
+      payload,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+          'X-MERCHANT-ID': MERCHANT_ID,
+          'X-CALLBACK-URL': `${BACKEND_URL}/api/webhook`
+        },
+        timeout: 10000
+      }
+    );
+
+    const response = apiResponse.data;
+    console.log('✅ Payment API response received');
+
+    // Save order to Firestore if available
+    if (db) {
+      try {
+        await db.collection('orders').doc(orderId).set({
+          merchantOrderId: orderId,
+          items,
+          table,
+          sessionId,
+          amount: total,
+          amountPaise,
+          status: 'PENDING',
+          environment: PHONEPE_ENV,
+          method: 'Manual API',
+          phonepeResponse: response,
+          createdAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+        console.log('✅ Order saved to Firestore');
+      } catch (firestoreError) {
+        console.warn('⚠️  Could not save to Firestore:', firestoreError.message);
+      }
+    }
 
     // Extract checkout URL
-    const checkoutUrl = response.data?.url || response.data?.redirectUrl;
+    const checkoutUrl = response.data?.instrumentResponse?.redirectInfo?.url || 
+                       response.data?.url;
 
     if (!checkoutUrl) {
-      throw new Error('No checkout URL in response');
+      console.error('❌ No checkout URL in response:', JSON.stringify(response, null, 2));
+      throw new Error('No checkout URL received from payment gateway');
     }
 
-    console.log('✅ Checkout URL:', checkoutUrl);
+    console.log('✅ Checkout URL generated:', checkoutUrl);
 
     res.json({
       success: true,
       orderId,
       checkoutUrl,
-      method: sdkAvailable ? 'SDK' : 'Manual API'
+      method: 'Manual API'
     });
 
   } catch (err) {
     console.error('❌ Order creation failed:', err.response?.data || err.message);
-
+    
     res.status(500).json({
       success: false,
       message: 'Failed to create order',
@@ -257,6 +232,7 @@ app.post('/api/webhook', async (req, res) => {
     const orderId = payload.merchantOrderId || payload.data?.merchantOrderId;
 
     if (!orderId) {
+      console.warn('⚠️  Webhook missing order ID');
       return res.status(400).send('Missing order ID');
     }
 
@@ -267,18 +243,27 @@ app.post('/api/webhook', async (req, res) => {
       status = 'FAILED';
     }
 
-    await db.collection('orders').doc(orderId).update({
-      status,
-      phonepeCallback: payload,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp()
-    });
+    console.log(`🔄 Updating order ${orderId} to status: ${status}`);
 
-    console.log(`✅ Order ${orderId} updated to ${status}`);
+    // Update Firestore if available
+    if (db) {
+      try {
+        await db.collection('orders').doc(orderId).update({
+          status,
+          phonepeCallback: payload,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+        console.log(`✅ Order ${orderId} updated to ${status}`);
+      } catch (firestoreError) {
+        console.warn('⚠️  Could not update Firestore:', firestoreError.message);
+      }
+    }
+
     res.status(200).send('OK');
 
   } catch (err) {
     console.error('❌ Webhook error:', err);
-    res.status(500).send('Error');
+    res.status(500).send('Error processing webhook');
   }
 });
 
@@ -289,58 +274,90 @@ app.get('/api/order-status', async (req, res) => {
   const orderId = req.query.orderId;
 
   if (!orderId) {
-    return res.status(400).json({ message: 'Order ID required' });
+    return res.status(400).json({ 
+      success: false,
+      message: 'Order ID required' 
+    });
   }
 
   try {
-    const doc = await db.collection('orders').doc(orderId).get();
-
-    if (!doc.exists) {
-      return res.status(404).json({ message: 'Order not found' });
-    }
-
-    const orderData = doc.data();
+    console.log(`🔍 Checking status for order: ${orderId}`);
 
     // Try to get latest status from PhonePe
     try {
-      let statusResponse;
+      const token = await getAccessToken();
+      const apiResponse = await axios.get(
+        `${API_CONFIG.PG_BASE}/order/${orderId}/status`,
+        {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'X-MERCHANT-ID': MERCHANT_ID
+          }
+        }
+      );
 
-      if (sdkAvailable && phonePeClient) {
-        statusResponse = await phonePeClient.checkStatus(orderId);
-      } else {
-        const token = await getAccessToken();
-        const apiResponse = await axios.get(
-          `${API_CONFIG.PG_BASE}/order/${orderId}/status`,
-          {
-            headers: {
-              'Authorization': `Bearer ${token}`,
-              'X-MERCHANT-ID': MERCHANT_ID
+      const statusResponse = apiResponse.data;
+      
+      // Update Firestore if available and status changed
+      if (db) {
+        try {
+          const doc = await db.collection('orders').doc(orderId).get();
+          if (doc.exists) {
+            const currentStatus = doc.data().status;
+            const newStatus = statusResponse.status || statusResponse.code;
+            
+            if (currentStatus !== newStatus) {
+              await db.collection('orders').doc(orderId).update({
+                status: newStatus,
+                lastStatusCheck: admin.firestore.FieldValue.serverTimestamp()
+              });
             }
           }
-        );
-        statusResponse = apiResponse.data;
+        } catch (firestoreError) {
+          console.warn('⚠️  Could not update Firestore:', firestoreError.message);
+        }
       }
 
       return res.json({
         success: true,
         orderId,
-        status: statusResponse.status || orderData.status,
-        order: orderData,
+        status: statusResponse.status || statusResponse.code,
         phonepeData: statusResponse
       });
 
     } catch (statusErr) {
-      return res.json({
-        success: true,
-        orderId,
-        status: orderData.status,
-        order: orderData
+      console.warn('⚠️  Status check failed:', statusErr.message);
+      
+      // Fallback to Firestore status
+      if (db) {
+        try {
+          const doc = await db.collection('orders').doc(orderId).get();
+          if (doc.exists) {
+            const orderData = doc.data();
+            return res.json({
+              success: true,
+              orderId,
+              status: orderData.status,
+              order: orderData
+            });
+          }
+        } catch (firestoreError) {
+          console.warn('⚠️  Firestore fallback failed:', firestoreError.message);
+        }
+      }
+      
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found or status unavailable'
       });
     }
 
   } catch (err) {
     console.error('❌ Status check error:', err);
-    res.status(500).json({ message: 'Error checking status' });
+    res.status(500).json({ 
+      success: false,
+      message: 'Error checking status' 
+    });
   }
 });
 
@@ -351,14 +368,27 @@ app.get('/api/test', (req, res) => {
   res.json({
     success: true,
     status: 'running',
-    sdkAvailable,
+    timestamp: new Date().toISOString(),
     config: {
       environment: PHONEPE_ENV,
-      merchantId: MERCHANT_ID,
-      clientId: CLIENT_ID,
+      merchantId: MERCHANT_ID ? '✅ Set' : '❌ Missing',
+      clientId: CLIENT_ID ? '✅ Set' : '❌ Missing',
       frontend: FRONTEND_URL,
-      backend: BACKEND_URL
+      backend: BACKEND_URL,
+      firebase: db ? '✅ Connected' : '❌ Not Available'
     }
+  });
+});
+
+// ============================================
+// HEALTH CHECK
+// ============================================
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'healthy',
+    service: 'PES Canteen Payment Backend',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime()
   });
 });
 
@@ -370,7 +400,6 @@ app.get('/', (req, res) => {
     status: 'running',
     name: 'PES Canteen Payment Backend',
     version: '2.0',
-    sdkAvailable,
     timestamp: new Date().toISOString()
   });
 });
@@ -380,5 +409,7 @@ app.get('/', (req, res) => {
 // ============================================
 app.listen(port, () => {
   console.log(`✅ Server running on port ${port}`);
-  console.log(`📡 Ready to process payments!\n`);
+  console.log(`📡 Ready to process payments!`);
+  console.log(`🌐 Health check: http://localhost:${port}/health`);
+  console.log(`🔧 Test endpoint: http://localhost:${port}/api/test\n`);
 });
