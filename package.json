@@ -19,7 +19,6 @@
     "dotenv": "^16.0.3",
     "express": "^4.19.2",
     "firebase-admin": "^11.11.1",
-    "pg-sdk-node": "file:./lib/phonepe-pg-sdk-node.tgz",
     "qs": "^6.11.0"
   },
   "devDependencies": {
